@@ -457,7 +457,13 @@ Restart VS Code after adding or changing this file. The server name **IBM-System
 
 ## Claude Desktop Configuration
 
-If you are using Claude Desktop instead of VS Code Copilot, add to `claude_desktop_config.json`:
+There are two ways to connect Claude Desktop depending on where your MCP server runs.
+
+---
+
+### Option A — Local (Claude Desktop and MCP server on the same machine)
+
+Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -469,6 +475,96 @@ If you are using Claude Desktop instead of VS Code Copilot, add to `claude_deskt
     }
 }
 ```
+
+---
+
+### Option B — Remote over the internet via `mcp-remote`
+
+If your MCP server runs on a **remote Linux server** (not on the machine running Claude Desktop), you can expose it over HTTPS using an SSE (Server-Sent Events) endpoint and connect to it with `npx mcp-remote`.
+
+This is the approach to use when:
+- Your IBM i connectivity lives on a server, not your local workstation
+- You want multiple team members to connect their Claude Desktop to the same MCP server
+- Your local machine doesn't have the IBM i ODBC drivers installed
+
+#### Step 1 — Expose your MCP server over HTTPS
+
+You need a reverse proxy (nginx, Caddy, etc.) sitting in front of your MCP server's SSE endpoint, with a valid TLS certificate. A common pattern using Caddy:
+
+```
+# Caddyfile
+mcp.yourdomain.com {
+    reverse_proxy localhost:3000
+}
+```
+
+Your MCP server needs to listen on HTTP (the reverse proxy handles TLS termination).
+
+#### Step 2 — Add a token to secure the endpoint
+
+**Never expose an unauthenticated MCP endpoint on the public internet.** Add a secret token that must be passed as a query parameter. In your MCP server, validate it before accepting connections:
+
+```javascript
+// In your MCP server's HTTP/SSE handler
+const VALID_TOKEN = process.env.MCP_ACCESS_TOKEN;
+
+app.get('/sse', (req, res) => {
+    if (req.query.token !== VALID_TOKEN) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    // ... proceed with SSE connection
+});
+```
+
+Store the token in your `.env` file (never hardcode it):
+
+```ini
+# .env
+MCP_ACCESS_TOKEN=generate-a-long-random-string-here
+```
+
+Generate a strong token:
+```bash
+openssl rand -hex 32
+```
+
+#### Step 3 — Configure Claude Desktop
+
+Install `mcp-remote` (a one-time setup, no global install needed — `npx` handles it):
+
+```json
+{
+    "mcpServers": {
+        "IBM-System-i": {
+            "command": "npx",
+            "args": [
+                "mcp-remote",
+                "https://mcp.yourdomain.com/sse?token=YOUR_SECRET_TOKEN_HERE"
+            ]
+        }
+    }
+}
+```
+
+> **Security note:** The token in the URL is visible in your `claude_desktop_config.json`. Treat this file like a password file — ensure it has restrictive file permissions (`chmod 600`) and is never committed to source control.
+
+#### Step 4 — Verify the connection
+
+In Claude Desktop, open a new conversation and look for **IBM-System-i** in the tool list (hammer icon). If it appears, the connection is live. Test it by asking:
+
+> *"Use the IBM-System-i tool to run: SELECT CURRENT_DATE AS TODAY FROM SYSIBM.SYSDUMMY1"*
+
+---
+
+### Configuration file locations
+
+| OS | `claude_desktop_config.json` path |
+|----|----------------------------------|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
+Restart Claude Desktop after any changes to this file.
 
 ---
 

@@ -68,6 +68,23 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Project-specific — do not expose internal config
+server/settings.py
+server/settings_local.py
+
+
 # Sphinx documentation
 docs/_build/
 
@@ -147,7 +164,7 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments & Credentials
 .env
 .envrc
 .venv
@@ -156,6 +173,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+secrets/
+credentials/
 
 # Spyder project settings
 .spyderproject

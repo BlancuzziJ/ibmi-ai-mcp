@@ -294,6 +294,10 @@ process.env.DJANGO_DB_CONNECTION = 'ibmi_db';  // matches your DATABASES key
 process.env.DB2_DEFAULT_SCHEMA   = 'YOUR_LIB'; // default library/schema
 process.env.LOG_LEVEL            = 'info';
 process.env.LOG_FILE             = __dirname + '/logs/mcp.log';
+// Kill timeout for dbquery child processes (milliseconds).
+// 90 s is a safe default for catalog queries on large libraries.
+// Increase this if you see spurious timeouts on very slow connections.
+process.env.CONNECTION_TIMEOUT   = '90000';
 
 require('./mcp/connectors/db2-mcp-connector.js');
 ```
@@ -385,15 +389,17 @@ Here are the 16 tools exposed to the AI assistant, all using IBM i catalog synta
 | `listMembers` | List members in a source file | `lib`, `file` |
 | `listSourceFiles` | List source files in a library | `lib` |
 | `describeFile` | Field definitions for a PF or LF | `lib`, `file` |
-| `listFiles` | List PF/LF files in a library | `lib` |
+| `listFiles` | List PF/LF files in a library — always supply `search` or `type` | `lib` |
 | `getFileKeys` | Key fields for a PF or LF | `lib`, `file` |
 | `getLogicals` | Logical files over a physical file | `lib`, `pf` |
-| `listPrograms` | List programs in a library | `lib` |
-| `listObjects` | List objects by type | `lib` |
+| `listPrograms` | List programs in a library — always supply `search` | `lib` |
+| `listObjects` | List objects by type — always supply `search` or a specific `type` | `lib` |
 | `getJobLog` | Retrieve recent job log entries | — |
-| `searchSource` | Search source text across members | `lib`, `pattern` |
+| `searchSource` | Search source text — requires `file` **or** `memberType` filter | `lib`, `pattern`, `file` or `memberType` |
 
 > ⚠️ **Critical:** Always pass a `search`, `namePattern`, or `type` filter when calling listing tools against large libraries. An unfiltered call against a large library can return millions of rows and overflow the AI's context window.
+>
+> ⚠️ **Timeout risk — `searchSource` without a source-file filter:** `searchSource` uses a correlated `QSYS2.IFS_READ` subquery that opens every source member file. Without a `file` parameter (e.g. `QRPGSRC`) or a `memberType` (e.g. `RPGLE`), this scans the **entire library** and will time out on any library with more than a few hundred members. The server enforces this at runtime and will return an error with an example if you omit both filters.
 
 ---
 
@@ -715,6 +721,30 @@ If this fails, check that `dbtools` (or your equivalent app) is in `INSTALLED_AP
 1. Confirm `.vscode/mcp.json` exists and is valid JSON
 2. Confirm `node mcp-server.js` runs without errors from the project root
 3. Restart VS Code — the MCP server list is loaded at startup
+
+### AI reports "MCP timed out" on catalog scans
+
+This happens when a listing tool (`searchSource`, `listObjects`, `listPrograms`, `listFiles`) is called against a large library without a filter. The child Python process runs indefinitely while the AI client's MCP timeout fires first.
+
+**Immediate fix — always supply a filter:**
+
+| Tool | What to supply |
+|------|---------------|
+| `searchSource` | `file` (e.g. `QRPGSRC`) **and/or** `memberType` (e.g. `RPGLE`) |
+| `listObjects` | `search` keyword **or** specific `type` (e.g. `*PGM`) |
+| `listPrograms` | `search` keyword |
+| `listFiles` | `search` keyword **or** `type` (`PF` or `LF`) |
+| `listMembers` | `search` keyword **or** `namePattern` (e.g. `INV*`) |
+
+**Adjust the kill timeout** via `CONNECTION_TIMEOUT` (milliseconds) in `mcp-server.js`. The default is `90000` (90 s). Slow network connections to the IBM i may need a higher value:
+
+```javascript
+process.env.CONNECTION_TIMEOUT = '120000'; // 120 s
+```
+
+The adapter reads this variable and kills the `dbquery` child process after that many milliseconds, returning a clear error to the AI instead of hanging silently.
+
+**If `searchSource` returns an error about missing filters**, that's the guard working correctly — add the `file` or `memberType` argument and retry.
 
 ### Test the full chain from Node.js
 

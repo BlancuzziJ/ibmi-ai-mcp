@@ -639,6 +639,59 @@ rows = cursor.fetchall()
 total_count = len(rows)
 ```
 
+### 6. `QSYS.QADBKFLD` uses `DBK*` columns, not `DBX*`
+
+When `QSYS2.SYSKEYS` is unusable on older IBM i releases (it internally references `SYSCSTCOL.ORDINAL_POSITION`, which may be absent), the canonical fallback for key-field metadata is the legacy `QSYS.QADBKFLD` system file. Its columns are prefixed `DBK*` — **not** `DBX*` (that prefix belongs to the unrelated `QSYS.QADBXREF` cross-reference file). Mixing the prefixes produces `SQL0205 - Column DBXLIB not in table QADBKFLD`.
+
+```sql
+-- ✅ Correct — DBK* prefix for QADBKFLD
+SELECT TRIM(k.DBKFLD) AS COLUMN_NAME, k.DBKPOS AS KEY_POSITION
+FROM QSYS.QADBKFLD k
+WHERE TRIM(k.DBKLIB) = 'MYLIB' AND TRIM(k.DBKFIL) = 'ORDHDRPF'
+ORDER BY k.DBKPOS
+
+-- ❌ Wrong — DBX* belongs to QADBXREF, not QADBKFLD
+WHERE TRIM(k.DBXLIB) = 'MYLIB' AND TRIM(k.DBXFIL) = 'ORDHDRPF'
+```
+
+### 7. `SYSTABLES.BASE_TABLE_*` is NULL for DDS logical files — use `SYSPARTITIONINDEXES`
+
+To find logical files built over a physical file, the obvious-looking columns `QSYS2.SYSTABLES.BASE_TABLE_SCHEMA` / `BASE_TABLE_NAME` only populate for SQL views and `CREATE INDEX` statements. For traditional DDS-defined logical files they are always `NULL`. `QSYS.QADBXREF` doesn't help either — it's a flat per-file cross-reference with no relationship column.
+
+The correct catalog is `QSYS2.SYSPARTITIONINDEXES`, where `INDEX_NAME` is the logical and `TABLE_SCHEMA` / `TABLE_NAME` point to the based-on physical:
+
+```sql
+SELECT DISTINCT TRIM(i.INDEX_NAME) AS LOGICAL_FILE,
+       COALESCE(t.TABLE_TEXT, '') AS DESCRIPTION
+FROM QSYS2.SYSPARTITIONINDEXES i
+LEFT JOIN QSYS2.SYSTABLES t
+  ON t.TABLE_SCHEMA = 'MYLIB'
+  AND t.TABLE_NAME = TRIM(i.INDEX_NAME)
+  AND t.TABLE_TYPE = 'L'
+WHERE i.TABLE_SCHEMA = 'MYLIB'
+  AND i.TABLE_NAME = 'ORDHDRPF'
+  AND i.INDEX_TYPE = 'LOGICAL'
+ORDER BY 1
+```
+
+### 8. Some QSYS2 catalog surfaces reject parameter markers — inline as literals
+
+Several IBM i catalog views and table functions silently return empty results (or error) when given `?` parameter markers, even though the same query works fine with inlined literals. Confirmed offenders include `QSYS2.OBJECT_STATISTICS()` (table function) and `QSYS2.SYSPARTITIONINDEXES` (view). When you hit a query that returns nothing but the equivalent inlined version returns data, suspect the parameter-marker path.
+
+```javascript
+// ✅ Inline as literals (with uppercasing + single-quote escaping for safety)
+const libName = lib.replace(/'/g, "''").toUpperCase();
+const pfName  = pf.replace(/'/g, "''").toUpperCase();
+const sql = `SELECT ... FROM QSYS2.SYSPARTITIONINDEXES
+             WHERE TABLE_SCHEMA = '${libName}' AND TABLE_NAME = '${pfName}'`;
+return executeQuery(sql, []);
+
+// ❌ Parameter markers — silently returns empty against these views
+return executeQuery(`... WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, [lib, pf]);
+```
+
+Always uppercase and escape single quotes when inlining identifiers — IBM i object names are uppercase by default and embedded apostrophes would break out of the literal.
+
 ---
 
 ## Security Considerations

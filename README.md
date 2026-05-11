@@ -692,6 +692,33 @@ return executeQuery(`... WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, [lib, pf]);
 
 Always uppercase and escape single quotes when inlining identifiers — IBM i object names are uppercase by default and embedded apostrophes would break out of the literal.
 
+### 9. IBM i catalog values are `CHAR(10)`-padded — trim before reusing them in `IFS_READ` paths
+
+Object names in IBM i SQL catalogs (`SYSPARTITIONSTAT.SYSTEM_TABLE_MEMBER`, `OBJECT_STATISTICS.OBJNAME`, etc.) come back as fixed-width `CHAR(10)` strings, padded with trailing spaces (e.g. `"AFR214LE  "`). The DB happily compares them with `=` against trimmed values, so equality queries hide this — but the moment you concatenate the value into a path for `QSYS2.IFS_READ()`, the trailing spaces become part of the path string and the read silently returns **zero rows** instead of an error.
+
+```javascript
+// ❌ Broken — listMembers returned "AFR214LE  " and the agent passed it straight to readSource
+const path = `/QSYS.LIB/${lib}.LIB/${file}.FILE/${member}.MBR`;
+// Becomes: '/QSYS.LIB/CFI2000.LIB/QRPGLESRC.FILE/AFR214LE  .MBR' → IFS_READ returns []
+
+// ✅ Trim every component before path-building
+const path = `/QSYS.LIB/${lib.trim().toUpperCase()}.LIB/`
+           + `${file.trim().toUpperCase()}.FILE/`
+           + `${member.trim().toUpperCase()}.MBR`;
+```
+
+Two defensive rules that save a lot of debugging:
+
+1. **In every tool that takes an IBM i object name as input**, normalize with `.trim().toUpperCase()` before using it in a path or inline SQL literal.
+2. **In every tool that returns object names from a catalog query**, wrap the SELECT in `TRIM()` so downstream agents don't receive padded strings to begin with:
+
+```sql
+-- ✅ TRIM at the catalog so consumers get a clean value
+SELECT TRIM(SYSTEM_TABLE_MEMBER) AS MEMBER, ... FROM QSYS2.SYSPARTITIONSTAT
+```
+
+This is the IBM i equivalent of "always strip whitespace on user input" — except the "user" is whatever upstream tool produced the value, and the failure mode is silent zero-row reads, not error messages.
+
 ---
 
 ## Security Considerations
